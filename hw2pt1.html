@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - blender -json</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				background:#777;
+				padding:0;
+				margin:0;
+				overflow:hidden;
+			}
+
+			#info {
+				position: absolute;
+				top: 0px;
+				width: 100%;
+				color: #ffffff;
+			}
+
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+
+		<script src="js/three.js"></script>
+		<script src="./js/dat.gui.min.js"></script>
+		<script src="js/OrbitControls.js"></script>
+		<script src="js/OBJLoader.js"></script>
+
+
+		<script id="vertexShader" type="x-shader/x-vertex">
+
+		uniform mat4 modelMatrix;
+		uniform mat4 viewMatrix;
+		uniform mat4 projectionMatrix;
+		uniform sampler2D tPic;
+
+		         	attribute vec3 position;
+		    	attribute vec2 uv;
+		    	attribute vec3 normal;
+
+		    	uniform float displaceAmt; //controls the amount of vertex displacement...
+
+		          	varying float vDisplace;
+		    	varying vec2 vUv;
+
+
+
+		            precision mediump float;
+
+
+		  void main() {
+
+		 	vUv = uv;
+
+			vec4 clr = texture2D(tPic, uv);
+		 	vDisplace = clr.r * displaceAmt; //displacement;
+		  vec3 newPosition = (position.xyz + normal.xyz * vDisplace).xyz;
+
+		 	gl_Position = projectionMatrix  * viewMatrix * modelMatrix  * vec4( newPosition, 1.0 );
+	    }
+
+		</script>
+
+		    	<script id="fragmentShader" type="x-shader/x-fragment">
+
+		          precision mediump float;
+
+		          uniform sampler2D tGrass, tSnow, tHill;
+
+
+		          varying vec2 vUv;
+		          varying float vDisplace;
+
+
+		          void main() {
+
+		    	vec4 grass = texture2D(tGrass, vUv);
+		    	vec4 snow = texture2D(tSnow, vUv);
+		    	vec4 hill = texture2D(tHill, vUv);
+
+		    	float zOffset = vDisplace;
+
+		    	vec4 mix1 = mix(grass, hill, min(1.0,zOffset*8.0));
+		    	vec4 mix2 = min(vec4(1.0), mix(snow, hill, zOffset) * 0.1);
+		    	vec4 mix3 = mix(mix1, mix2, zOffset);
+
+
+		    	gl_FragColor = vec4( mix3.rgb, 1.0 );
+
+		       }
+
+		    	</script>
+
+
+
+  <script id="skyboxVS" type="x-shader/x-vertex">
+
+	uniform mat4 modelMatrix;
+	uniform mat4 viewMatrix;
+      	uniform mat4 projectionMatrix;
+
+     	attribute vec3 position;
+
+	varying vec3 vWorldPosition;
+
+	void main() {
+
+		vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+		vWorldPosition = worldPosition.xyz;
+
+		vec4 p = viewMatrix * modelMatrix * vec4(position, 1.0);
+		gl_Position = projectionMatrix * p;
+
+     	 }
+
+    </script>
+
+
+    <script id="skyboxFS" type="x-shader/x-fragment">
+
+		precision mediump float;
+
+		uniform samplerCube tCube;
+
+		varying vec3 vWorldPosition;
+
+		void main() {
+
+			gl_FragColor = textureCube( tCube, vec3(  vWorldPosition.xyz ) );
+		}
+
+    </script>
+
+
+    <script id="environmentMapVS" type="x-shader/x-vertex">
+
+	uniform mat4 modelMatrix;
+	uniform mat4 viewMatrix;
+      	uniform mat4 projectionMatrix;
+
+	uniform vec3 cameraPosition;
+
+     	attribute vec3 position;
+     	attribute vec3 normal;
+
+	varying vec3 vI;
+	varying vec3 vWorldNormal;
+
+	void main() {
+  		vec4 mvPosition = viewMatrix * modelMatrix * vec4( position, 1.0 );
+  		vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+
+  		vWorldNormal = normalize( mat3( modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz ) * normal );
+
+  		vI = worldPosition.xyz - cameraPosition;
+
+  		gl_Position = projectionMatrix * mvPosition;
+	}
+
+	</script>
+
+	 <script id="environmentMapFS" type="x-shader/x-fragment">
+
+		precision mediump float;
+
+		uniform samplerCube envMap;
+
+		varying vec3 vI;
+		varying vec3 vWorldNormal;
+
+		void main() {
+  			vec3 reflection = reflect( vI, vWorldNormal );
+  			vec4 envColor = textureCube( envMap, vec3( -reflection.x, reflection.yz ) );
+  			gl_FragColor = vec4(envColor);
+		}
+
+	</script>
+
+
+	<script>
+
+	var vs = document.getElementById( 'vertexShader' ).textContent;
+	var fs = document.getElementById( 'fragmentShader' ).textContent;
+
+	var sb_vs = document.getElementById( 'skyboxVS' ).textContent;
+  var sb_fs = document.getElementById( 'skyboxFS' ).textContent;
+
+	var em_vs = document.getElementById( 'environmentMapVS' ).textContent;
+  var em_fs = document.getElementById( 'environmentMapFS' ).textContent;
+
+
+
+		var container;
+		var camera, scene, renderer;
+
+		var skyMesh, box, rose;
+		var gui = new dat.GUI( { width: 350 } );
+		var options;
+
+		var texture0;
+
+		      var texture1 = new THREE.TextureLoader().load( 'heightMap1.png' );
+		      var texture2 = new THREE.TextureLoader().load( 'waterTexture.jpg' );
+		      var texture3 = new THREE.TextureLoader().load( 'volcanoTexture.jpg' ); //snow.jpg
+		      var texture4 = new THREE.TextureLoader().load( 'hill.jpg' );
+
+
+		init();
+		animate();
+
+
+
+		function init() {
+
+			container = document.getElementById( 'container' );
+
+			camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 2000 );
+			camera.position.set( -1.5, -1.5, 1.5 );
+			camera.rotation.x = 0.9;
+
+			scene = new THREE.Scene();
+
+			options = {
+					displacement: 0.3,
+			};
+
+			var geometry1 = new THREE.PlaneGeometry( 5, 5, 600, 600 );
+
+			var cubeMap = new THREE.CubeTextureLoader()
+				.setPath( './img/sor_sea/' )
+				.load( [
+					'sea_rt.jpg',
+					'sea_lf.jpg',
+					'sea_up.jpg',
+					'sea_dn.jpg',
+					'sea_ft.jpg',
+					'sea_bk.jpg'
+				] );
+
+
+			var cubeMap2 = new THREE.CubeTextureLoader()
+					.setPath( './img/mp_ss/' )
+					.load( [
+						'ss_rt.tga',
+				   	'ss_lf.tga',
+						'ss_up.tga',
+						'ss_dn.tga',
+						'ss_ft.tga',
+						'ss_bk.tga'
+					] );
+
+					gui.add( options, "displacement", 0, 1 );
+
+
+			var uniforms = { "tCube": { type: "t", value: cubeMap },
+											 "tFlip": { type: "f", value: -1 } };
+
+
+
+			var uniforms1 =  {
+				displaceAmt: { type: "f", value: 0.0 },
+				tPic: { type: "t", value: texture1  },
+				tGrass: { type: "t", value: texture2  },
+				tSnow: { type: "t", value: texture3  },
+				tHill: { type: "t", value: texture4  },
+			};
+
+			var
+
+			var material = new THREE.RawShaderMaterial( {
+					uniforms: uniforms,
+					vertexShader: sb_vs,
+					fragmentShader: sb_fs
+				} );
+
+				var material1 = new THREE.RawShaderMaterial( {
+					uniforms: uniforms1,
+					vertexShader: vs,
+					fragmentShader: fs,
+				} );
+
+
+
+			material.depthWrite = false;
+      material.side = THREE.BackSide;
+
+
+			var geometry = new THREE.BoxGeometry( 600, 600, 600 );
+			skyMesh = new THREE.Mesh( geometry, material );
+			//geometry.rotateX(-Math.PI/3);
+			scene.add( skyMesh );
+
+			var mesh1 = new THREE.Mesh( geometry1, material1 );
+			mesh1.material.side = THREE.DoubleSide;
+			//mesh1.rotateX(-Math.PI/3);
+			scene.add( mesh1 );
+
+
+
+	var uniforms2 = {
+        	tCube: { type: "t", value: cubeMap },
+	};
+
+	var material2 = new THREE.RawShaderMaterial( {
+					uniforms: uniforms2,
+					vertexShader: em_vs,
+					fragmentShader: em_fs
+	} );
+
+	//var loader = new THREE.OBJLoader(  );
+
+	//loader.load( 'rose.obj', function ( object ) {
+/*
+		object.traverse( function ( child ) {
+			if ( child instanceof THREE.Mesh ) {
+				child.material = material2;
+			}
+		} );
+
+		var s = 2.0;
+		object.scale.set( s, s, s );
+		object.position.x += 1.0;
+		object.position.y -= 0.5;
+
+		rose = object;
+		scene.add( rose );
+		*/
+
+
+	var gBox = new THREE.BoxGeometry( 1, 1, 1 );
+	//var material3 = blen(material2, material1);
+	box = new THREE.Mesh(gBox, material2);
+	box.position.x -= 1.0;
+	scene.add (box);
+
+
+
+	renderer = new THREE.WebGLRenderer();
+	renderer.setPixelRatio( window.devicePixelRatio );
+	renderer.setSize( window.innerWidth, window.innerHeight );
+	container.appendChild( renderer.domElement );
+
+	window.addEventListener( 'resize', onWindowResize, false );
+	//document.addEventListener('mousemove', onDocumentMouseMove, false);
+
+		}
+
+		function onWindowResize( event ) {
+
+			renderer.setSize( window.innerWidth, window.innerHeight );
+
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+		}
+
+
+		function animate() {
+
+			var object0 = scene.children[ 1 ];
+			//object0.material.uniforms.displaceAmt.value = 0.5 * (1.0 + Math.sin(time * 0.001));
+			if(options.map = 2)
+			object0.material.uniforms.displaceAmt.value = 3.0;
+
+
+			requestAnimationFrame( animate );
+			render();
+		}
+
+/*
+		var X = 0.5;
+		var mouseX = 0.5;
+		var mouseY = 0.5;
+		var prevMouseX = 0.5;
+		var prevMouseY = 0.5;
+*/
+		function render() {
+			var time = performance.now();
+			//camera.lookAt( scene.position );
+			//camera.rotation.y = mouseX * 4;
+			//camera.rotation.x = mouseY * 4;
+
+			box.rotation.y += 0.001;
+			box.rotation.x -= 0.002;
+			//rose.rotation.y -= 0.001;
+			//rose.rotation.x += 0.002;
+
+			var object0 = scene.children[ 1 ];
+			//object0.material.uniforms.displaceAmt.value = 0.5 * (1.0 + Math.sin(time * 0.001));
+			var displaceV = options.displacement;
+
+			// object0.material.uniforms.displaceAmt.value = 0.75;
+			object0.material.uniforms.displaceAmt.value = displaceV;
+
+
+			renderer.render( scene, camera );
+		}
+
+
+document.onkeydown = checkKey;
+function checkKey(e) {
+
+    e = e || window.event;
+
+    if (e.keyCode == '38') {
+        // up arrow
+				if(camera.position.y > 2){
+					camera.position.y = 2;
+				}
+
+				camera.position.y += 0.2;
+    }
+    else if (e.keyCode == '40') {
+        // down arrow
+				if(camera.position.y < -2){
+					camera.position.y = -2;
+				}
+				camera.position.y -= 0.2;
+    }
+    else if (e.keyCode == '37') {
+       // left arrow
+			 if(camera.position.x < -2){
+				 camera.position.x = -2;
+			 }
+			 camera.position.x -= 0.2;
+    }
+    else if (e.keyCode == '39') {
+       // right arrow
+			 if(camera.position.x > 2){
+				 camera.position.x = 2;
+			 }
+			 camera.position.x += 0.2;
+    }
+		else if (e.keyCode == '65') {
+			// A key
+			camera.rotation.z -= 0.2;
+		}
+		else if (e.keyCode == '68') {
+			// D key
+			camera.rotation.z += 0.2;
+		}
+		else if (e.keyCode == '87') {
+			// W key
+			if(camera.rotation.x > 2){
+				camera.rotation.x = 2;
+			}
+			camera.rotation.x += 0.2;
+		}
+		else if (e.keyCode == '83') {
+			// S key
+			if(camera.rotation.x < 0.2){
+				camera.rotation.x = 0.2;
+			}
+			camera.rotation.x -= 0.2;
+		}
+		else if (e.keyCode == '187') {
+			// + key
+			if(camera.position.z < 1){
+				camera.position.z = 1;
+			}
+			camera.position.z -= 0.2;
+		}
+		else if (e.keyCode == '189') {
+			// - key
+			if(camera.position.z > 4){
+				camera.position.z = 4;
+			}
+			camera.position.z += 0.2;
+		}
+
+}
+
+
+	</script>
+	</body>
+</html>
